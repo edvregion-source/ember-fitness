@@ -9,6 +9,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 /* Layout: satu layar ponsel, gelap dengan cahaya merah dari kanan atas, kartu kaca tipis, pil navigasi melayang. */
+@font-face{font-family:'EmberBody';src:url('fonts/plus-jakarta.woff2') format('woff2');font-weight:200 800;font-style:normal;font-display:swap}
+@font-face{font-family:'EmberDisplay';src:url('fonts/bricolage.woff2') format('woff2');font-weight:200 800;font-style:normal;font-display:swap}
 :root{
   --bg:#0a0607;
   --ink:#ffffff;
@@ -20,8 +22,8 @@
   --red:#ff4757;
   --red-btn:#e11d32;
   --red-deep:#6e0c1b;
-  --f-display:'Bricolage Grotesque','Plus Jakarta Sans',system-ui,sans-serif;
-  --f-body:'Plus Jakarta Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --f-display:'EmberDisplay','Bricolage Grotesque','Plus Jakarta Sans',system-ui,sans-serif;
+  --f-body:'EmberBody','Plus Jakarta Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
   color-scheme:dark;
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
@@ -266,6 +268,8 @@ input{font:inherit;color:inherit}
 .authform input:focus{border-color:rgba(255,255,255,.5);outline:0}
 .authform .two{display:flex;gap:10px}
 .authform .two .btn{flex:1;height:48px}
+.linkbtn{align-self:flex-start;color:var(--muted);font-size:14px;text-decoration:underline;padding:4px 0}
+.linkbtn:hover{color:#fff}
 /* toast */
 .toast{position:absolute;left:50%;top:calc(env(safe-area-inset-top) + 14px);transform:translate(-50%,-20px);opacity:0;pointer-events:none;background:#fff;color:#140a0c;font-weight:600;font-size:14px;padding:12px 18px;border-radius:22px;max-width:calc(100% - 40px);z-index:60;transition:opacity .25s,transform .25s;text-align:center;box-shadow:0 12px 30px rgba(0,0,0,.5)}
 @media (min-width:560px){.toast{top:56px}}
@@ -388,7 +392,7 @@ function seed(){
   return L;
 }
 var state={goal:700,name:'Raka',targets:{strength:40,cardio:45,mobility:30},log:seed(),view:'home',sel:TODAY,filter:'all',q:'',resetArm:false};
-state.updatedAt=null;
+state.updatedAt=null;state.forgot=0;state.forgotEmail='';
 try{
   var saved=JSON.parse(localStorage.getItem(KEY)||'null');
   if(saved&&saved.log){state.goal=saved.goal||state.goal;state.name=saved.name||state.name;state.targets=saved.targets||state.targets;state.log=saved.log;state.updatedAt=saved.updatedAt||null}
@@ -673,7 +677,13 @@ var syncInfo={busy:false,msg:'',err:false};
 var pushT=null,busyAuth=false;
 
 function sbBase(){return String(CFG.url||'').replace(/\/+$/,'')}
-function hdr(tok){return {'apikey':CFG.anonKey,'Authorization':'Bearer '+(tok||CFG.anonKey),'Content-Type':'application/json'}}
+function hdr(tok){
+  var h={'apikey':CFG.anonKey,'Content-Type':'application/json'};
+  /* kunci lama (anon, berbentuk JWT) boleh dikirim sebagai Bearer; kunci baru (sb_publishable_...) tidak */
+  if(tok)h['Authorization']='Bearer '+tok;
+  else if(/^eyJ/.test(CFG.anonKey))h['Authorization']='Bearer '+CFG.anonKey;
+  return h;
+}
 function ts(x){return Date.parse(String(x).replace(/(\.\d{3})\d+/,'$1'))}
 function idErr(m){
   m=String(m||'');
@@ -682,6 +692,9 @@ function idErr(m){
   if(/not confirmed/i.test(m))return 'Email belum dikonfirmasi, cek kotak masukmu';
   if(/password.*(6|characters)/i.test(m))return 'Kata sandi minimal 6 karakter';
   if(/valid email|email.*invalid|unable to validate email/i.test(m))return 'Format email tidak valid';
+  if(/rate limit|after \d+ seconds|too many/i.test(m))return 'Terlalu sering meminta kode, coba lagi beberapa menit lagi';
+  if(/expired or is invalid|otp_expired|token.*invalid/i.test(m))return 'Kode salah atau sudah kedaluwarsa';
+  if(/different from the old/i.test(m))return 'Kata sandi baru harus berbeda dari yang lama';
   if(/failed to fetch|networkerror|load failed/i.test(m))return 'Tidak ada koneksi internet';
   return m||'Terjadi kesalahan';
 }
@@ -759,6 +772,31 @@ function doAuth(kind){
     storeSession(j);toast('Berhasil masuk');render();return syncNow();
   }).catch(function(e){toast(idErr(e.message))}).then(function(){busyAuth=false});
 }
+function sendReset(){
+  if(busyAuth)return;
+  var em=(($('#fem')||{}).value||'').trim();
+  if(!em){toast('Isi email dulu');return}
+  busyAuth=true;toast('Mengirim kode…');
+  authCall('recover',{email:em}).then(function(){
+    state.forgotEmail=em;state.forgot=2;toast('Kode dikirim. Cek emailmu.');render();
+  }).catch(function(e){toast(idErr(e.message))}).then(function(){busyAuth=false});
+}
+function confirmReset(){
+  if(busyAuth)return;
+  var code=(($('#fcode')||{}).value||'').replace(/\s/g,''),pw=($('#fpw')||{}).value||'';
+  if(!code||!pw){toast('Isi kode dan kata sandi baru');return}
+  if(pw.length<6){toast('Kata sandi minimal 6 karakter');return}
+  busyAuth=true;toast('Memproses…');
+  authCall('verify',{type:'recovery',email:state.forgotEmail,token:code}).then(function(j){
+    if(!j.access_token)throw new Error('Kode salah atau sudah kedaluwarsa');
+    return fetch(sbBase()+'/auth/v1/user',{method:'PUT',headers:hdr(j.access_token),body:JSON.stringify({password:pw})}).then(function(r){
+      return r.json().catch(function(){return {}}).then(function(u){
+        if(!r.ok)throw new Error(u.msg||u.message||u.error_description||('Gagal ('+r.status+')'));
+        storeSession(j);state.forgot=0;toast('Kata sandi diganti. Kamu sudah masuk.');render();return syncNow();
+      });
+    });
+  }).catch(function(e){toast(idErr(e.message))}).then(function(){busyAuth=false});
+}
 function signOut(){
   var tok=session&&session.access_token;
   clearTimeout(pushT);
@@ -770,16 +808,24 @@ function acctHTML(){
   if(!SB_ON)return h+'<div class="set"><div class="lb">Akun &amp; sinkronisasi<small>Belum diatur. Isi URL dan kunci Supabase (lihat README).</small></div></div></div>';
   if(session)return h+'<div class="set"><div class="lb">'+esc(session.user.email||'Akun')+'<small id="syncst">'+esc(syncInfo.msg||'Tersambung')+'</small></div><button class="btn ghost" style="height:42px;padding:0 16px" data-act="signout">Keluar</button></div>'+
     '<div class="set"><div class="lb">Sinkronkan sekarang<small>Perubahan otomatis tersimpan ke akun</small></div><button class="btn ghost" style="height:42px;padding:0 16px" data-act="syncnow">Sinkron</button></div></div>';
+  if(state.forgot===1)return h+'<div class="authform"><div class="lb">Atur ulang kata sandi<small>Kami kirim kode ke emailmu</small></div>'+
+    '<input id="fem" type="email" placeholder="Email" value="'+esc(state.forgotEmail)+'" autocomplete="email" inputmode="email" aria-label="Email">'+
+    '<div class="two"><button class="btn primary" data-act="forgot-send">Kirim kode</button><button class="btn ghost" data-act="forgot-cancel">Batal</button></div></div></div>';
+  if(state.forgot===2)return h+'<div class="authform"><div class="lb">Masukkan kode<small>Kode dikirim ke '+esc(state.forgotEmail)+'</small></div>'+
+    '<input id="fcode" type="text" inputmode="numeric" placeholder="Kode dari email" autocomplete="one-time-code" aria-label="Kode dari email">'+
+    '<input id="fpw" type="password" placeholder="Kata sandi baru (min. 6 karakter)" autocomplete="new-password" aria-label="Kata sandi baru">'+
+    '<div class="two"><button class="btn primary" data-act="forgot-confirm">Atur ulang</button><button class="btn ghost" data-act="forgot-cancel">Batal</button></div></div></div>';
   return h+'<div class="authform"><div class="lb">Masuk untuk menyinkronkan data<small>Tanpa akun, data tetap tersimpan di perangkat ini</small></div>'+
     '<input id="em" type="email" placeholder="Email" autocomplete="email" inputmode="email" aria-label="Email">'+
     '<input id="pw" type="password" placeholder="Kata sandi (min. 6 karakter)" autocomplete="current-password" aria-label="Kata sandi">'+
-    '<div class="two"><button class="btn primary" data-act="signin">Masuk</button><button class="btn ghost" data-act="signup">Daftar</button></div></div></div>';
+    '<div class="two"><button class="btn primary" data-act="signin">Masuk</button><button class="btn ghost" data-act="signup">Daftar</button></div>'+
+    '<button class="linkbtn" data-act="forgot">Lupa kata sandi?</button></div></div>';
 }
 function initSync(){
   if(!SB_ON)return;
   window.addEventListener('online',function(){syncNow()});
   document.addEventListener('visibilitychange',function(){if(!document.hidden)syncNow()});
-  document.addEventListener('keydown',function(e){if(e.key==='Enter'&&e.target&&e.target.id==='pw')doAuth('signin')});
+  document.addEventListener('keydown',function(e){if(e.key!=='Enter'||!e.target)return;if(e.target.id==='pw')doAuth('signin');else if(e.target.id==='fem')sendReset();else if(e.target.id==='fpw'||e.target.id==='fcode')confirmReset()});
   if(session)syncNow();
 }
 
@@ -789,7 +835,7 @@ document.addEventListener('click',function(e){
   var b=e.target.closest('[data-act]');if(!b)return;
   var a=b.dataset.act,id=b.dataset.id;
   switch(a){
-    case 'view':state.view=b.dataset.view;state.resetArm=false;render();break;
+    case 'view':state.view=b.dataset.view;state.resetArm=false;state.forgot=0;render();break;
     case 'sel':state.sel=b.dataset.date;render();break;
     case 'today':state.sel=TODAY;state.view='home';render();break;
     case 'add':openAdd();break;
@@ -807,6 +853,10 @@ document.addEventListener('click',function(e){
     case 's-prev':if(sess.i>0){sess.i--;redrawSession()}break;
     case 's-finish':var wid=sess.wid;endSession();logWorkout(wid,state.sel);break;
     case 'signin':case 'signup':doAuth(a);break;
+    case 'forgot':state.forgotEmail=(($('#em')||{}).value||'').trim();state.forgot=1;render();break;
+    case 'forgot-cancel':state.forgot=0;render();break;
+    case 'forgot-send':sendReset();break;
+    case 'forgot-confirm':confirmReset();break;
     case 'signout':signOut();break;
     case 'syncnow':syncNow().then(function(){toast(syncInfo.err?syncInfo.msg:'Sinkronisasi selesai')});break;
     case 'step':
